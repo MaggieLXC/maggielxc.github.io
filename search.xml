@@ -1,26 +1,287 @@
 <?xml version="1.0" encoding="utf-8"?>
-<search>
-  <entry>
-    <title><![CDATA[raft协议小结]]></title>
-    <url>%2F2017%2F09%2F15%2Fraft%E5%8D%8F%E8%AE%AE%E5%B0%8F%E7%BB%93%2F</url>
-    <content type="text"><![CDATA[raft协议是什么？分布式系统之于单机系统，优势之一就是有更好的容错性。 比如，一台机器上的磁盘损坏，数据丢失，可以从另一台机器上的磁盘恢复（分布式系统会对数据做备份） 比如，集群中某些机器宕机，整个集群还可以对外提供服务 这是如何做到的？比较容易的一个想法就是备份（backup）。一个系统的工作模是：接受客户端的command，系统进行处理，将处理的结果返回给客户端。由此可见，系统里的数据可能会因为command而变化。 实现备份的做法之一就是复制状态机（Repilcated State Machine，RSM），它有一个很重要的性质——确定性（deterministic）： 如果两个相同的、确定性的状态从同一状态开始，并且以相同的顺序获得相同的输入，那么这两个状态机将会生成相同的输出，并且结束在相同的状态 也就是说，如果我们能按顺序将command作用于状态机，它就可以产生相同的状态和相同的输出那么一个状态机如何实现呢？如下图所示（来自raft协议）： 上图中，每个RSM都有一个replicated log，存储的是来自客户端的commands。每个RSM中replicate log中commads的顺序都是相同的，状态机按顺序处理replicate log中的command,并将处理的结果返回给客户端。由于状态机具有确定性，因此每个状态机的输出和状态都是相同的。 上图中有一个模块——Consensus Module刚刚没有提及。这个模块用于保证每个server上Log的一致性！ 如果不做任何保障，直接将commad暴力写入，一旦服务器宕机或者出现什么其他故障，就会导致这个Log丢失，并且无法恢复。而出现故障的可能性是很高的，这就导致系统不可用 raft就是Consensus Module的一个实现 因此，raft是一致性协议，是用来保障servers上副本一致性的一种算法。 ##raft协议原理 下面将看论文时我认为的重要点进行记录。 raft协议遵循的性质 Election Safty 每一个任期内只能有一个领导人 Leader Append-Only leader只能追加日志条目，不能重写或者删除日志条目 Log Maching 如果两个日志条目的index和term都相同，则两个如果日志中，两个条目及它们之前的日志条目也完全相同 Leader Completeness 如果一条日志被commited过，那么大于该日志条目任期的日志都应该包含这个点 State Machine Safety 如果一个server将某个特定index的日志条目交由状态机处理了，那么对于其他server，交由状态及处理的log中相同index的日志条目应该相同 ###如何保证Election Safty raft中，只要candidate获得多数投票，就可以成为领导人。follower在投票的时候遵循两个条件： 先到先得 cadidate的term大于follower的term，或者两个term相等，但cadidate的index大于follower的index 对于选举结果： 如果票被瓜分，产生两个leader，这次选举失效，进行下一轮的选举 只有一个leader的情况是被允许的 这里重要的一点是：如何保证在有限的时间内确定出一个候选人，而不会总是出现票被瓜分的情况？raft使用了一个比较优雅的实现方式，随机选举超时(randomize election timeouts)。这就使得每个server的timeout不一样，发起新一轮选举的时候，有些server还不是voter;或者一些符合条件的candidate还没有参加下一轮。这种做法使得单个leader会很快被选举出来。 ###如何保证Log Matching Leader在进行AppendEntry RPCs的时候，这个消息中会携带preLogIndex和preLogTerm这两个信息，follower收到消息的时候，首先找到与preLogIndex相同index处的entry是否和preLogTerm相同，如果一样，才会append. 这就保证了新加日志和其前一条日志一定是一样的。从第一条日志起就开始遵循这个原理，很自然地可以作出这样的推断。 ###如何保证Leader Completeness 这个在raft协议中是有完整证明的，这个证明比较简短，用反正法，我在看的时候加了一些标注。 假设leaderU是第一个没有包含leaderT中commitT点（T&lt;U） 基于这个假设，一个事实是，开始选举的时候，U中就不包含T中的commit点 由于leaderT有commitT点，说明在任期T内，有大部分的follower都有commitT的点。这就说明，一定存在一个voter，它包含了commitT点，并且它投票给了leaderU 如果leaderU和这个voter有相同的term，那么leaderU的日志长度一定大于等于这个voter（否则会因为index小而被拒绝投票），那么leaderU肯定包含了voter的所有信息（这个是由Log Matching的属性决定的，它们包含有相同的term，因此相同index的日志条目肯定相同),leaderU中肯定包含commit点，这与假设矛盾 如果leaderU和这个voter的term不同，那么leaderU的日志index一定大于等于voter的index。也就是说，为leaderU添加最后一条entry的那个leader因该已经包含提交的日志（这是因为leaderU的leader的term&gt;leaderU的term&gt;voter的term，而leaderU是的一个不符合条件的任期，所以leaderU的leader应该是符合条件的，肯定就包含了voter的commit点），即包含commit点，根据Log Maching的原则，leaderU里面一定包含了这一点，这与假设矛盾 因此，leader completeness是可以保证的 ###raft协议中有一个约定，不能提交之前任期内log entry作为commit点。这是为什么？ 这个问题主要是raft协议中commiting entries from previous term部分看的时候有点困惑，开始误解成了这个约定是用来保证之前任期内已经被复制到大多数server却没有被提交的日志在新的仍期内不会被覆盖。 实际上，论文中的figrure8的过程是一个正确的过程。 在（c）中,index=2并没有被提交，在(d)中被复制了是一个正确的做法。论文想阐述的是：如果在(c)中，leader提交了这个之前任期内的entry，在(d)中依然会被覆盖，也就是说被commit的entry覆盖了，这是一个错误！因此约定“can not commit entries from previous term” ###cluster membership changes如果集群的配置发生了变化，例如，新加入几台server，挂掉几台server。这是会影响选举的。 例如，如果新增了服务器，却没有更新原来server的配置，会导致leader election只有老机器在参与 又比如，如果直接将新的配置更新到leader这个方法是有问题的。如果leader没有及时通知到所有的服务器，那么存在部分server是老配置，部分server是新配置，从而可能会产生两个leader,如下图的情况： raft的解决方法就是two phase approch，引入一个过度配置，称为共同一致状态。具体的做法和图示： leader收到更新配置请求的时候，产生一个（old,new）entry，并append进日志 通过rpc让follower追加这条日志 如果顺利，将这条日志commit 产生new entry, append到日志 通过rpc让follower追加 如果顺利commit，从而完成新配置的生成 考虑上述过程： 1,2两个阶段，如果过程中出现问题，大多数情况old成为新的leader 因为此时，拥有（old，new）entry的server并不是大多数 如果说，已经复制给大多数server，只是未提交，那么（old，new）是有可能被选为leader，不过这没有什么太大的影响，因为新的leader在被选之后，会发送一条no-op的rpc，这个时候（old，new）就会被提交。重要的是，此时也仅有可能一个leader被选出，old不肯那个被选举为leader. 3,4,5阶段，大多数情况（old，new）成为leader，例外与上条类似 5阶段就是new成为leader ###log过长或日志回放时间过长怎么办？ 此时就需要做log compaction raft采用的方法写时复制的snapshot(写是复制在linux中可以通过fork来完成) 写时复制主要是处于性能考虑的，如果state machine数据太多，snapshot将会耗费大量的时间，也许会导致系统可用性大大降低]]></content>
-      <categories>
-        <category>一致性协议</category>
-      </categories>
-      <tags>
-        <tag>复制协议</tag>
-      </tags>
-  </entry>
-  <entry>
-    <title><![CDATA[PacificA协议小结]]></title>
-    <url>%2F2017%2F09%2F14%2FPacificA%E5%8D%8F%E8%AE%AE%E5%B0%8F%E7%BB%93%2F</url>
-    <content type="text"><![CDATA[简介大规模分布式存储系统往往采用廉价的商用机器或硬件，失效出错是常态，因此容错是这类系统实现可用性和可靠性的关键。PacificA是微软大规模分布式存储系统开发的一个通用复制框架，提供强一致性，可以适配不同的复制策略。PacificA的设计特点有： 一个通用和抽象（general and abstract）的复制框架，正确性易验证，不同实例可以使用不同策略 配置管理和数据复制分离。Paxo负责配置管理，主从策略负责数据复制 错误检测和配置更新是在数据复制的交互过程中完成的，去中心化 系统框架这里面数据存储的最小单位是数据段（数据的集合，是实际存储在磁盘上的文件）。 复制组（replica goup）：分布在不同存储节点上的相同数据段（下图中的Data Node1中的Data1和Data Node3中的Data1构成一个复制组. 副本（replica）：每个数据段为一个副本. 主副本（primary）/从副本（secondary）：这个是由复制组的配置信息（configuration）指定的。如果复制组信息的变化（比如replica的移除或增加），都会导致配置信息的变化. 版本（version）：用来追踪configuration的变化. 存储集群：负责数据的查询（query）和更新（update）,通过使用多副本的方式保证数据的可靠性和可用性. 配置管理集群：维护副本信息，比如，replica的移除和增加、当前副本的版本等。该集群使用Paxos协议维护该数据的一致性. 数据复制（data Replication）PacificA的使用主从框架进行数据复制，保证数据的一致性。queries和updates都发送给primary，其中quries由primary在本地处理，updates由primary通知到所有的secondaries共同处理。 如何能做到强一致？如果满足下列条件，系统就能做到强一致（其实也就是复制状态机的属性）： 复制组中的servers如果能按相同的顺序处理统一请求集合 update操作的结果都是确定性的 在PacificA中，为了实现强一致性，primary会给收到的所有update消息编号（这个编号是连续并且单调递增的），然后通知secondary按编号顺序处理这些请求。就这种做法，PacificA做了一个建模：replica有一个prepare list和commited point. prepare list：用来存放所有request,其中的每个request有一个sn号（就是上面所说的消息编号）. commited point ：这个点之前的所有update操作是肯定不会丢失的 commited list：prepare list中从起始点到commited point这一点所包含requests。可以保证这个list中的所有请求是不会丢失的（server发生不可容忍的错误除外，比如所有replica永远挂掉了）。 aplication state：将commited list中所有的requests按sn顺序作用在init state后的结果 正常情况下（Normal-case）查询： primary收到query，查询commited list中的state，并将查询结果返回 更新： primary给update分配可用的sn号 primary给secondaries发送prepare message（prepare包含request、configuration version、该request在primary的prepare list中的sn） 当secondary收到prepare message信息后，把这条信息插入到prepare list secondary向primary发送acknowledgement,当primary收到所有secondaries的消息之后，primary移动commited point primary给客户端返回已成功的消息，同时，给从节点发送prepare message（primary本次提交的commited sn）通知secondaries可以移动commited点了. 下图简单演示了这个过程： 由图中可以直观的看到： 如果p是primary，q是replica group中的任何一个secondary,则下列关系成立： committedq⊆committedp⊆preparedq称这个为提交不变性（Commit Invariant） 简短的证明：primary只有在sedondaries都将request插入到prepare list中后才会移动committed point，则有committedp⊆preparedq；secondary只有收到primary的prepare message之后才会移动committed point，这个时候，primary已经移动过自己的committed点了。 配置管理（Configuration Management）上面说的数据复制都是在没有异常的情况下进行的，对于节点上下线等情况，复制组的configuration会发生变化，此时就需要配置管理介入了。 配置管理维护复制组的信息：节点信息和版本信息 下列三种情况会导致复制组的配置发生变化（需要reconfiguration）： secondary离线 如果primary在lease period内未收到从节点对心跳的回应，则认为secondary异常，primary向配置管理汇报更新复制组的configuration，将该点从复制组中移除，并且自己也降级不再作为primary.configuration manager收到消息之后，更新本地配置。此时replica group中无主，secondaries会向configuration manager申请成为新的主. primary离线 如果secondary在grace period内未收到primary的心跳，则认为primary异常，secondary向配置管理汇报更新复制组的configuration，将primary从复制组中移除，并将自己升级为主。如果configuration management同意了该请求，该replica提升为主 复制组增加新的节点 可能的一种情况是，原来离线的节点重新上线，此时primary向配置管理汇报最新拓扑。 上述情况中，replica向configuration manager发送汇报变更的时候，除了要将当前最新的configuration发送过去，还需要包含当前配置信息的版本。只有当replica发送过来的当前配置版本和configuration manager中的版本信息相同时，更新请求才会成功，否则失败。 此外，configuration management按照请求的先后顺序进行处理。这是必要的，因为如果同一个replica group的多个replica申请为主成功，configuration management就会将该复制组的version增加，此时，其他请求就会因为当前携带version不同而被拒绝 错误检测（Failure Detection）上部分已经说明了secondary异常和primary异常如何检测，提到了lease period和grace period lease period：primary会定期发送beacons给secondary并等待回答，如果在lease period期间内没有获得acknowledgement，那么primary认为lease失效. secondary收到primary信息的时候，会查看configuration，如果确实是primary，它就会回答. grace period：如果secondary发现从接到上一个beacon起的grace period后，还没有收到primary发送过来的消息，就认为primary的lease失效. 只要lease period&lt;=grace period,就不会产生二主问题。因为主总是先检测到从没有回复这件事情，它会汇报给configuration managemenet并且降级为secondary；secondary检测到primary异常的时候，primary已经降级了. Reconcilliation配置管理小节说reconfiguration的时候，没有说成为新的primary之后应该做什么。当一个replica成为新的primary的时，需要做的第一件事情是Reconfiguration。其实就是为了同步复制组的信息（不过pacificA中并没有清楚的说明这一过程，只说了最后要达到的效果，日志同步可以参考raft的实现方式）。 primary把它prepare list中的uncommitted requests通过prepare message发送给secondaries，并提交（感觉这种提交好像有问题，因为此时还没有同步到secondaries上，如过提交完挂了怎么办），假设commited point是sn secondary收到信息后，根据primary的sn进行prapare list的截断（不能超过sn） Recovery配置管理小节同样没有提及新节点加入之后应该怎么去达到right status。 新加入的时候，replica是以candidate的身份加入的 primary同样给candidate发送prepare messages candidate在接受prepare messages的同时，还要从其中复制组中的某个replica中分布获取preoare list中的信息，直到candidate可以catch-up candidate请求primary把它加到configuration中。primary给configuration manager发送添加该点的信息 这个过程就是recovery 不过如果一个全新的server加入，这种状态转换的开销是很大的，pacificA里面提到了其他文章中的一种做法catch-up recovery （这个pacificA里面只大致说了一下，没有描述的很清楚，我暂时还没有看这篇论文Availability in the Echo file system） 实践中的日志复制 pacificA中提及了三种方法 Logiccal Replication 将prepare list和application state分离开，log既保存application log，也保存prepared request。这样做可以减少开销。 要实现上述方法，可以在application log entry中添加configuration,sn,lastcommitted sn. Logical-V 这个方法说只有primary在内存中保存这个state，而secondary只增加entry，不改变状态。 Layered Replication lower layer做持久化存储，upper layer将应用逻辑转化为对文件的操作。其实这样的话，就可以把replication这个事情交给lower layer去做，比如Bigtable就是基于GFS的。]]></content>
-      <categories>
-        <category>一致性协议</category>
-      </categories>
-      <tags>
-        <tag>复制协议</tag>
-        <tag>强一致</tag>
-      </tags>
-  </entry>
+<search> 
+  
+    
+    <entry>
+      <title><![CDATA[raft协议小结]]></title>
+      <url>/2017/09/15/raft%E5%8D%8F%E8%AE%AE%E5%B0%8F%E7%BB%93/</url>
+      <content type="html"><![CDATA[<h2 id="raft协议是什么？"><a href="#raft协议是什么？" class="headerlink" title="raft协议是什么？"></a>raft协议是什么？</h2><p>分布式系统之于单机系统，优势之一就是有更好的容错性。</p>
+<ul>
+<li>比如，一台机器上的磁盘损坏，数据丢失，可以从另一台机器上的磁盘恢复（分布式系统会对数据做备份）</li>
+<li>比如，集群中某些机器宕机，整个集群还可以对外提供服务</li>
+</ul>
+<p>这是如何做到的？比较容易的一个想法就是备份（backup）。一个系统的工作模是：接受客户端的command，系统进行处理，将处理的结果返回给客户端。由此可见，系统里的数据可能会因为command而变化。</p>
+<p>实现备份的做法之一就是复制状态机（Repilcated State Machine，RSM），它有一个很重要的性质——确定性（deterministic）：</p>
+<blockquote>
+<p>如果两个相同的、确定性的状态从同一状态开始，并且以相同的顺序获得相同的输入，那么这两个状态机将会生成相同的输出，并且结束在相同的状态</p>
+</blockquote>
+<p>也就是说，如果我们能按顺序将command作用于状态机，它就可以产生相同的状态和相同的输出<br>那么一个状态机如何实现呢？如下图所示（来自raft协议）：</p>
+<p><img src="http://pacifica.nos-eastchina1.126.net/raft.png" alt=""></p>
+<p>上图中，每个RSM都有一个replicated log，存储的是来自客户端的commands。每个RSM中replicate log中commads的顺序都是相同的，状态机按顺序处理replicate log中的command,并将处理的结果返回给客户端。由于状态机具有确定性，因此每个状态机的输出和状态都是相同的。</p>
+<p>上图中有一个模块——Consensus Module刚刚没有提及。这个模块用于保证<strong>每个server上Log的一致性</strong>！</p>
+<ul>
+<li>如果不做任何保障，直接将commad暴力写入，一旦服务器宕机或者出现什么其他故障，就会导致这个Log丢失，并且无法恢复。而出现故障的可能性是很高的，这就导致系统不可用</li>
+<li>raft就是Consensus Module的一个实现</li>
+</ul>
+<p>因此，raft是一致性协议，是用来保障servers上副本一致性的一种算法。</p>
+<h2 id="raft协议原理"><a href="#raft协议原理" class="headerlink" title="raft协议原理　"></a>raft协议原理　</h2><p>下面将看论文时我认为的重要点进行记录。　<br>　　<br>raft协议遵循的性质</p>
+<ul>
+<li><p>Election Safty</p>
+<ul>
+<li>每一个任期内只能有一个领导人</li>
+</ul>
+</li>
+<li><p>Leader Append-Only</p>
+<ul>
+<li>leader只能追加日志条目，不能重写或者删除日志条目</li>
+</ul>
+</li>
+<li><p>Log Maching</p>
+<ul>
+<li>如果两个日志条目的index和term都相同，则两个如果日志中，两个条目及它们之前的日志条目也完全相同</li>
+</ul>
+</li>
+<li><p>Leader Completeness</p>
+<ul>
+<li>如果一条日志被commited过，那么大于该日志条目任期的日志都应该包含这个点</li>
+</ul>
+</li>
+<li><p>State Machine Safety</p>
+<ul>
+<li>如果一个server将某个特定index的日志条目交由状态机处理了，那么对于其他server，交由状态及处理的log中相同index的日志条目应该相同</li>
+</ul>
+</li>
+</ul>
+<h3 id="如何保证Election-Safty"><a href="#如何保证Election-Safty" class="headerlink" title="如何保证Election Safty"></a>如何保证Election Safty</h3><p>　　raft中，只要candidate获得多数投票，就可以成为领导人。follower在投票的时候遵循两个条件：</p>
+<ul>
+<li><p>先到先得</p>
+</li>
+<li><p>cadidate的term大于follower的term，或者两个term相等，但cadidate的index大于follower的index</p>
+</li>
+<li><p>对于选举结果：</p>
+</li>
+<li><p>如果票被瓜分，产生两个leader，这次选举失效，进行下一轮的选举</p>
+</li>
+<li><p>只有一个leader的情况是被允许的</p>
+</li>
+</ul>
+<p>这里重要的一点是：如何保证在有限的时间内确定出一个候选人，而不会总是出现票被瓜分的情况？raft使用了一个比较优雅的实现方式，随机选举超时(randomize election timeouts)。这就使得每个server的timeout不一样，发起新一轮选举的时候，有些server还不是voter;或者一些符合条件的candidate还没有参加下一轮。这种做法使得单个leader会很快被选举出来。 </p>
+<h3 id="如何保证Log-Matching"><a href="#如何保证Log-Matching" class="headerlink" title="如何保证Log Matching"></a>如何保证Log Matching</h3><p>Leader在进行AppendEntry RPCs的时候，这个消息中会携带preLogIndex和preLogTerm这两个信息，follower收到消息的时候，首先找到与preLogIndex相同index处的entry是否和preLogTerm相同，如果一样，才会append.</p>
+<p>这就保证了新加日志和其前一条日志一定是一样的。从第一条日志起就开始遵循这个原理，很自然地可以作出这样的推断。</p>
+<h3 id="如何保证Leader-Completeness"><a href="#如何保证Leader-Completeness" class="headerlink" title="如何保证Leader Completeness"></a>如何保证Leader Completeness</h3><p>这个在raft协议中是有完整证明的，这个证明比较简短，用反正法，我在看的时候加了一些标注。</p>
+<p>假设leaderU是第一个没有包含leaderT中commitT点（T&lt;U）</p>
+<ul>
+<li><p>基于这个假设，一个事实是，开始选举的时候，U中就不包含T中的commit点</p>
+</li>
+<li><p>由于leaderT有commitT点，说明在任期T内，有大部分的follower都有commitT的点。这就说明，一定存在一个voter，它包含了commitT点，并且它投票给了leaderU</p>
+</li>
+<li><p>如果leaderU和这个voter有相同的term，那么leaderU的日志长度一定大于等于这个voter<strong>（否则会因为index小而被拒绝投票）</strong>，那么leaderU肯定包含了voter的所有信息<strong>（这个是由Log Matching的属性决定的，它们包含有相同的term，因此相同index的日志条目肯定相同)</strong>,leaderU中肯定包含commit点，这与假设矛盾</p>
+</li>
+<li><p>如果leaderU和这个voter的term不同，那么leaderU的日志index一定大于等于voter的index。也就是说，为leaderU添加最后一条entry的那个leader因该已经包含提交的日志<strong>（这是因为leaderU的leader的term&gt;leaderU的term&gt;voter的term，而leaderU是的一个不符合条件的任期，所以leaderU的leader应该是符合条件的，肯定就包含了voter的commit点）</strong>，即包含commit点，根据Log Maching的原则，leaderU里面一定包含了这一点，这与假设矛盾</p>
+</li>
+<li><p>因此，leader completeness是可以保证的</p>
+</li>
+</ul>
+<h3 id="raft协议中有一个约定，不能提交之前任期内log-entry作为commit点。这是为什么？"><a href="#raft协议中有一个约定，不能提交之前任期内log-entry作为commit点。这是为什么？" class="headerlink" title="raft协议中有一个约定，不能提交之前任期内log entry作为commit点。这是为什么？"></a>raft协议中有一个约定，不能提交之前任期内log entry作为commit点。这是为什么？</h3><p>这个问题主要是raft协议中commiting entries from previous term部分看的时候有点困惑，开始误解成了这个约定是用来保证之前任期内已经被复制到大多数server却没有被提交的日志在新的仍期内不会被覆盖。<br>　<br>实际上，论文中的figrure8的过程是一个正确的过程。</p>
+<p><img src="http://pacifica.nos-eastchina1.126.net/raft2.png" alt=""></p>
+<p>在（c）中,index=2并没有被提交，在(d)中被复制了是一个正确的做法。论文想阐述的是：如果在(c)中，leader提交了这个之前任期内的entry，在(d)中依然会被覆盖，也就是说被commit的entry覆盖了，这是一个错误！因此约定“can not commit entries from previous term”</p>
+<h3 id="cluster-membership-changes"><a href="#cluster-membership-changes" class="headerlink" title="cluster membership changes"></a>cluster membership changes</h3><p>如果集群的配置发生了变化，例如，新加入几台server，挂掉几台server。这是会影响选举的。</p>
+<ul>
+<li><p>例如，如果新增了服务器，却没有更新原来server的配置，会导致leader election只有老机器在参与</p>
+</li>
+<li><p>又比如，如果直接将新的配置更新到leader这个方法是有问题的。如果leader没有及时通知到所有的服务器，那么存在部分server是老配置，部分server是新配置，从而可能会产生两个leader,如下图的情况：</p>
+</li>
+</ul>
+<p><img src="http://pacifica.nos-eastchina1.126.net/raft3.png" alt=""></p>
+<p>raft的解决方法就是two phase approch，引入一个过度配置，称为共同一致状态。具体的做法和图示：</p>
+<ul>
+<li><p>leader收到更新配置请求的时候，产生一个（old,new）entry，并append进日志</p>
+</li>
+<li><p>通过rpc让follower追加这条日志</p>
+</li>
+<li><p>如果顺利，将这条日志commit</p>
+</li>
+<li><p>产生new entry, append到日志</p>
+</li>
+<li><p>通过rpc让follower追加</p>
+</li>
+<li><p>如果顺利commit，从而完成新配置的生成</p>
+</li>
+</ul>
+<p><img src="http://pacifica.nos-eastchina1.126.net/raft4.png" alt=""></p>
+<p><strong>考虑上述过程：</strong></p>
+<ul>
+<li><p>1,2两个阶段，如果过程中出现问题，大多数情况old成为新的leader</p>
+<ul>
+<li><p>因为此时，拥有（old，new）entry的server并不是大多数</p>
+</li>
+<li><p>如果说，已经复制给大多数server，只是未提交，那么（old，new）是有可能被选为leader，不过这没有什么太大的影响，因为新的leader在被选之后，会发送一条no-op的rpc，这个时候（old，new）就会被提交。重要的是，此时也仅有可能一个leader被选出，old不肯那个被选举为leader.</p>
+</li>
+</ul>
+</li>
+<li><p>3,4,5阶段，大多数情况（old，new）成为leader，例外与上条类似</p>
+</li>
+<li><p>5阶段就是new成为leader</p>
+</li>
+</ul>
+<h3 id="log过长或日志回放时间过长怎么办？"><a href="#log过长或日志回放时间过长怎么办？" class="headerlink" title="log过长或日志回放时间过长怎么办？"></a>log过长或日志回放时间过长怎么办？</h3><p>　　此时就需要做log compaction</p>
+<p>　　raft采用的方法<strong>写时复制</strong>的snapshot(写是复制在linux中可以通过fork来完成)</p>
+<ul>
+<li>写时复制主要是处于性能考虑的，如果state machine数据太多，snapshot将会耗费大量的时间，也许会导致系统可用性大大降低</li>
+</ul>
+<p>　　
+　　</p>
+<p>　　</p>
+]]></content>
+      
+        <categories>
+            
+            <category> 一致性协议 </category>
+            
+        </categories>
+        
+        
+        <tags>
+            
+            <tag> 复制协议 </tag>
+            
+        </tags>
+        
+    </entry>
+    
+    <entry>
+      <title><![CDATA[PacificA协议小结]]></title>
+      <url>/2017/09/14/PacificA%E5%8D%8F%E8%AE%AE%E5%B0%8F%E7%BB%93/</url>
+      <content type="html"><![CDATA[<h2 id="简介"><a href="#简介" class="headerlink" title="简介"></a>简介</h2><p>大规模分布式存储系统往往采用廉价的商用机器或硬件，失效出错是常态，因此容错是这类系统实现可用性和可靠性的关键。PacificA是微软大规模<br>分布式存储系统开发的一个通用复制框架，提供强一致性，可以适配不同的复制策略。PacificA的设计特点有：</p>
+<ol>
+<li>一个通用和抽象（general and abstract）的复制框架，正确性易验证，不同实例可以使用不同策略</li>
+<li>配置管理和数据复制分离。Paxo负责配置管理，主从策略负责数据复制</li>
+<li>错误检测和配置更新是在数据复制的交互过程中完成的，去中心化</li>
+</ol>
+<a id="more"></a>
+<h2 id="系统框架"><a href="#系统框架" class="headerlink" title="系统框架"></a>系统框架</h2><p>这里面数据存储的最小单位是数据段（数据的集合，是实际存储在磁盘上的文件）。</p>
+<blockquote>
+<p><strong><em>复制组（replica goup）</em></strong>：分布在不同存储节点上的相同数据段（下图中的Data Node1中的Data1和Data Node3中的Data1构成一个复制组.</p>
+<p><strong><em>副本（replica）</em></strong>：每个数据段为一个副本.</p>
+<p><strong><em>主副本（primary）</em></strong>/<strong><em>从副本（secondary）</em></strong>：这个是由复制组的<strong><em>配置信息（configuration）</em></strong>指定的。如果复制组信息的变化（比如replica的移除或增加），都会导致配置信息的变化.</p>
+<p><strong><em>版本（version）</em></strong>：用来追踪configuration的变化.</p>
+<p><strong><em>存储集群</em></strong>：负责数据的<strong><em>查询（query）</em></strong>和<strong><em>更新（update）</em></strong>,通过使用多副本的方式保证数据的可靠性和可用性.</p>
+<p><strong><em>配置管理集群</em></strong>：维护副本信息，比如，replica的移除和增加、当前副本的版本等。该集群使用Paxos协议维护该数据的一致性.</p>
+</blockquote>
+<p><img src="http://pacifica.nos-eastchina1.126.net/PacificA%E6%80%BB%E4%BD%93%E6%A1%86%E6%9E%B6.png" alt="此处输入图片的描述"></p>
+<h3 id="数据复制（data-Replication）"><a href="#数据复制（data-Replication）" class="headerlink" title="数据复制（data Replication）"></a>数据复制（data Replication）</h3><p>PacificA的使用主从框架进行数据复制，保证数据的一致性。queries和updates都发送给primary，其中quries由primary在本地处理，updates由primary通知到所有的secondaries共同处理。</p>
+<p>如何能做到强一致？如果满足下列条件，系统就能做到强一致（其实也就是复制状态机的属性）：</p>
+<ul>
+<li>复制组中的servers如果能按相同的顺序处理统一请求集合</li>
+<li>update操作的结果都是确定性的</li>
+</ul>
+<p>在PacificA中，为了实现强一致性，primary会给收到的所有update消息编号（这个编号是连续并且单调递增的），然后通知secondary按编号顺序处理这些请求。就这种做法，PacificA做了一个<strong>建模</strong>：replica有一个<strong><em>prepare list</em></strong>和<strong><em>commited point</em></strong>.</p>
+<blockquote>
+<p><strong><em>prepare list</em></strong>：用来存放所有request,其中的每个request有一个<strong><em>sn</em></strong>号（就是上面所说的消息编号）.</p>
+<p><strong><em>commited point</em></strong> ：这个点之前的所有update操作是肯定不会丢失的</p>
+<p><strong><em>commited list</em></strong>：prepare list中从起始点到commited point这一点所包含requests。可以保证这个list中的所有请求是不会丢失的（server发生不可容忍的错误除外，比如所有replica永远挂掉了）。</p>
+<p><strong><em>aplication state</em></strong>：将commited list中所有的requests按sn顺序作用在<strong><em>init state</em></strong>后的结果</p>
+</blockquote>
+<p><strong>正常情况下（Normal-case）</strong><br>查询：</p>
+<blockquote>
+<p>primary收到query，查询commited list中的state，并将查询结果返回</p>
+</blockquote>
+<p>更新：</p>
+<ol>
+<li>primary给update分配可用的sn号</li>
+<li>primary给secondaries发送<strong><em>prepare message</em></strong>（prepare包含request、configuration version、该request在primary的prepare list中的sn）</li>
+<li>当secondary收到prepare message信息后，把这条信息插入到prepare list</li>
+<li>secondary向primary发送acknowledgement,当primary收到所有secondaries的消息之后，primary移动commited point</li>
+<li>primary给客户端返回已成功的消息，同时，给从节点发送prepare message（primary本次提交的commited sn）通知secondaries可以移动commited点了.</li>
+</ol>
+<p>下图简单演示了这个过程：</p>
+<p><img src="http://pacifica.nos-eastchina1.126.net/pacificA%20Prepare%20list.png" alt="此处输入图片的描述"></p>
+<p>由图中可以直观的看到：</p>
+<blockquote>
+<p>如果p是primary，q是replica group中的任何一个secondary,则下列关系成立：<br>                committedq⊆committedp⊆preparedq<br>称这个为<strong><em>提交不变性（Commit Invariant）</em></strong></p>
+</blockquote>
+<p>简短的证明：primary只有在sedondaries都将request插入到prepare list中后才会移动committed point，则有committedp⊆preparedq；secondary只有收到primary的prepare message之后才会移动committed point，这个时候，primary已经移动过自己的committed点了。</p>
+<h3 id="配置管理（Configuration-Management）"><a href="#配置管理（Configuration-Management）" class="headerlink" title="配置管理（Configuration Management）"></a>配置管理（Configuration Management）</h3><p>上面说的数据复制都是在没有异常的情况下进行的，对于节点上下线等情况，复制组的configuration会发生变化，此时就需要配置管理介入了。</p>
+<p>配置管理维护复制组的信息：节点信息和版本信息</p>
+<p>下列三种情况会导致复制组的配置发生变化（需要reconfiguration）：</p>
+<ul>
+<li>secondary离线</li>
+</ul>
+<blockquote>
+<p>如果primary在<strong><em>lease period</em></strong>内未收到从节点对心跳的回应，则认为secondary异常，primary向配置管理汇报更新复制组的configuration，将该点从复制组中移除，并且自己也降级不再作为primary.configuration manager收到消息之后，更新本地配置。此时replica group中无主，secondaries会向configuration manager申请成为新的主.</p>
+</blockquote>
+<ul>
+<li>primary离线</li>
+</ul>
+<blockquote>
+<p>如果secondary在<strong><em>grace period</em></strong>内未收到primary的心跳，则认为primary异常，secondary向配置管理汇报更新复制组的configuration，将primary从复制组中移除，并将自己升级为主。如果configuration management同意了该请求，该replica提升为主</p>
+</blockquote>
+<ul>
+<li>复制组增加新的节点</li>
+</ul>
+<blockquote>
+<p>可能的一种情况是，原来离线的节点重新上线，此时primary向配置管理汇报最新拓扑。</p>
+</blockquote>
+<p>上述情况中，replica向configuration manager发送汇报变更的时候，除了要将当前最新的configuration发送过去，<strong>还需要包含当前配置信息的版本</strong>。只有当replica发送过来的当前配置版本和configuration manager中的版本信息相同时，更新请求才会成功，否则失败。</p>
+<p>此外，configuration management按照请求的先后顺序进行处理。这是必要的，因为如果同一个replica group的多个replica申请为主成功，configuration management就会将该复制组的version增加，此时，其他请求就会因为当前携带version不同而被拒绝</p>
+<h3 id="错误检测（Failure-Detection）"><a href="#错误检测（Failure-Detection）" class="headerlink" title="错误检测（Failure Detection）"></a>错误检测（Failure Detection）</h3><p>上部分已经说明了secondary异常和primary异常如何检测，提到了<strong><em>lease period</em></strong>和<strong><em>grace period</em></strong></p>
+<blockquote>
+<p><strong><em>lease period</em></strong>：primary会定期发送<strong><em>beacons</em></strong>给secondary并等待回答，如果在<strong><em>lease period</em></strong>期间内没有获得acknowledgement，那么primary认为lease失效.</p>
+<ul>
+<li>secondary收到primary信息的时候，会查看configuration，如果确实是primary，它就会回答.</li>
+</ul>
+<p><strong><em>grace period</em></strong>：如果secondary发现从接到上一个beacon起的<strong><em>grace period</em></strong>后，还没有收到primary发送过来的消息，就认为primary的lease失效.</p>
+</blockquote>
+<p>只要lease period&lt;=grace period,就不会产生二主问题。因为主总是先检测到从没有回复这件事情，它会汇报给configuration managemenet并且降级为secondary；secondary检测到primary异常的时候，primary已经降级了.</p>
+<h3 id="Reconcilliation"><a href="#Reconcilliation" class="headerlink" title="Reconcilliation"></a>Reconcilliation</h3><p>配置管理小节说reconfiguration的时候，没有说成为新的primary之后应该做什么。<br>当一个replica成为新的primary的时，需要做的第一件事情是<strong><em>Reconfiguration</em></strong>。<strong>其实就是为了同步复制组的信息（不过pacificA中并没有清楚的说明这一过程，只说了最后要达到的效果，日志同步可以参考raft的实现方式）</strong>。</p>
+<ul>
+<li>primary把它prepare list中的uncommitted requests通过prepare message发送给secondaries，并提交<strong>（感觉这种提交好像有问题，因为此时还没有同步到secondaries上，如过提交完挂了怎么办）</strong>，假设commited point是sn</li>
+<li>secondary收到信息后，根据primary的sn进行prapare list的截断（不能超过sn）</li>
+</ul>
+<h3 id="Recovery"><a href="#Recovery" class="headerlink" title="Recovery"></a>Recovery</h3><p>配置管理小节同样没有提及新节点加入之后应该怎么去达到right status。</p>
+<ul>
+<li>新加入的时候，replica是以<strong><em>candidate</em></strong>的身份加入的</li>
+<li>primary同样给candidate发送prepare messages</li>
+<li>candidate在接受prepare messages的同时，还要从其中复制组中的某个replica中分布获取preoare list中的信息，直到candidate可以catch-up</li>
+<li>candidate请求primary把它加到configuration中。primary给configuration manager发送添加该点的信息</li>
+</ul>
+<p>这个过程就是<strong><em>recovery</em></strong></p>
+<p>不过如果一个全新的server加入，这种状态转换的开销是很大的，pacificA里面提到了其他文章中的一种做法<strong><em>catch-up recovery</em></strong> <strong>（这个pacificA里面只大致说了一下，没有描述的很清楚，我暂时还没有看这篇论文Availability in the Echo file system）</strong></p>
+<h3 id="实践中的日志复制"><a href="#实践中的日志复制" class="headerlink" title="实践中的日志复制"></a>实践中的日志复制</h3><p><img src="http://pacifica.nos-eastchina1.126.net/pacificA%E5%AE%9E%E8%B7%B5%E4%B8%AD%E7%9A%84%E7%B3%BB%E7%BB%9F.png" alt="此处输入图片的描述"></p>
+<p>pacificA中提及了三种方法</p>
+<ol>
+<li><p>Logiccal Replication</p>
+<ul>
+<li>将prepare list和application state分离开，log既保存application log，也保存prepared request。这样做可以减少开销。</li>
+<li>要实现上述方法，可以在application log entry中添加configuration,sn,lastcommitted sn.</li>
+</ul>
+</li>
+<li><p>Logical-V</p>
+<p> 这个方法说只有primary在内存中保存这个state，而secondary只增加entry，不改变状态。</p>
+</li>
+<li><p>Layered Replication</p>
+<p> lower layer做持久化存储，upper layer将应用逻辑转化为对文件的操作。其实这样的话，就可以把replication这个事情交给lower layer去做，比如Bigtable就是基于GFS的。</p>
+</li>
+</ol>
+]]></content>
+      
+        <categories>
+            
+            <category> 一致性协议 </category>
+            
+        </categories>
+        
+        
+        <tags>
+            
+            <tag> 复制协议 </tag>
+            
+            <tag> 强一致 </tag>
+            
+        </tags>
+        
+    </entry>
+    
+  
+  
 </search>

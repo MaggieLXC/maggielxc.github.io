@@ -109,7 +109,7 @@
 <meta property="og:image" content="http://pacifica.nos-eastchina1.126.net/raft2.png">
 <meta property="og:image" content="http://pacifica.nos-eastchina1.126.net/raft3.png">
 <meta property="og:image" content="http://pacifica.nos-eastchina1.126.net/raft4.png">
-<meta property="og:updated_time" content="2017-09-15T09:28:03.109Z">
+<meta property="og:updated_time" content="2017-09-15T09:30:18.692Z">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="raft协议小结">
 <meta name="twitter:description" content="raft协议是什么？分布式系统之于单机系统，优势之一就是有更好的容错性。  比如，一台机器上的磁盘损坏，数据丢失，可以从另一台机器上的磁盘恢复（分布式系统会对数据做备份） 比如，集群中某些机器宕机，整个集群还可以对外提供服务  这是如何做到的？比较容易的一个想法就是备份（backup）。一个系统的工作模是：接受客户端的command，系统进行处理，将处理的结果返回给客户端。由此可见，系统里的数据可">
@@ -418,7 +418,7 @@
 <li>raft就是Consensus Module的一个实现</li>
 </ul>
 <p>因此，raft是一致性协议，是用来保障servers上副本一致性的一种算法。</p>
-<p>##raft协议原理　<br>下面将看论文时我认为的重要点进行记录。　<br>　　<br>raft协议遵循的性质</p>
+<h2 id="raft协议原理"><a href="#raft协议原理" class="headerlink" title="raft协议原理　"></a>raft协议原理　</h2><p>下面将看论文时我认为的重要点进行记录。　<br>　　<br>raft协议遵循的性质</p>
 <ul>
 <li><p>Election Safty</p>
 <ul>
@@ -446,7 +446,7 @@
 </ul>
 </li>
 </ul>
-<p>###如何保证Election Safty<br>　　raft中，只要candidate获得多数投票，就可以成为领导人。follower在投票的时候遵循两个条件：</p>
+<h3 id="如何保证Election-Safty"><a href="#如何保证Election-Safty" class="headerlink" title="如何保证Election Safty"></a>如何保证Election Safty</h3><p>　　raft中，只要candidate获得多数投票，就可以成为领导人。follower在投票的时候遵循两个条件：</p>
 <ul>
 <li><p>先到先得</p>
 </li>
@@ -460,11 +460,9 @@
 </li>
 </ul>
 <p>这里重要的一点是：如何保证在有限的时间内确定出一个候选人，而不会总是出现票被瓜分的情况？raft使用了一个比较优雅的实现方式，随机选举超时(randomize election timeouts)。这就使得每个server的timeout不一样，发起新一轮选举的时候，有些server还不是voter;或者一些符合条件的candidate还没有参加下一轮。这种做法使得单个leader会很快被选举出来。 </p>
-<p>###如何保证Log Matching</p>
-<p>Leader在进行AppendEntry RPCs的时候，这个消息中会携带preLogIndex和preLogTerm这两个信息，follower收到消息的时候，首先找到与preLogIndex相同index处的entry是否和preLogTerm相同，如果一样，才会append.</p>
+<h3 id="如何保证Log-Matching"><a href="#如何保证Log-Matching" class="headerlink" title="如何保证Log Matching"></a>如何保证Log Matching</h3><p>Leader在进行AppendEntry RPCs的时候，这个消息中会携带preLogIndex和preLogTerm这两个信息，follower收到消息的时候，首先找到与preLogIndex相同index处的entry是否和preLogTerm相同，如果一样，才会append.</p>
 <p>这就保证了新加日志和其前一条日志一定是一样的。从第一条日志起就开始遵循这个原理，很自然地可以作出这样的推断。</p>
-<p>###如何保证Leader Completeness</p>
-<p>这个在raft协议中是有完整证明的，这个证明比较简短，用反正法，我在看的时候加了一些标注。</p>
+<h3 id="如何保证Leader-Completeness"><a href="#如何保证Leader-Completeness" class="headerlink" title="如何保证Leader Completeness"></a>如何保证Leader Completeness</h3><p>这个在raft协议中是有完整证明的，这个证明比较简短，用反正法，我在看的时候加了一些标注。</p>
 <p>假设leaderU是第一个没有包含leaderT中commitT点（T&lt;U）</p>
 <ul>
 <li><p>基于这个假设，一个事实是，开始选举的时候，U中就不包含T中的commit点</p>
@@ -478,11 +476,10 @@
 <li><p>因此，leader completeness是可以保证的</p>
 </li>
 </ul>
-<p>###raft协议中有一个约定，不能提交之前任期内log entry作为commit点。这是为什么？</p>
-<p>这个问题主要是raft协议中commiting entries from previous term部分看的时候有点困惑，开始误解成了这个约定是用来保证之前任期内已经被复制到大多数server却没有被提交的日志在新的仍期内不会被覆盖。<br>　<br>实际上，论文中的figrure8的过程是一个正确的过程。</p>
+<h3 id="raft协议中有一个约定，不能提交之前任期内log-entry作为commit点。这是为什么？"><a href="#raft协议中有一个约定，不能提交之前任期内log-entry作为commit点。这是为什么？" class="headerlink" title="raft协议中有一个约定，不能提交之前任期内log entry作为commit点。这是为什么？"></a>raft协议中有一个约定，不能提交之前任期内log entry作为commit点。这是为什么？</h3><p>这个问题主要是raft协议中commiting entries from previous term部分看的时候有点困惑，开始误解成了这个约定是用来保证之前任期内已经被复制到大多数server却没有被提交的日志在新的仍期内不会被覆盖。<br>　<br>实际上，论文中的figrure8的过程是一个正确的过程。</p>
 <p><img src="http://pacifica.nos-eastchina1.126.net/raft2.png" alt=""></p>
 <p>在（c）中,index=2并没有被提交，在(d)中被复制了是一个正确的做法。论文想阐述的是：如果在(c)中，leader提交了这个之前任期内的entry，在(d)中依然会被覆盖，也就是说被commit的entry覆盖了，这是一个错误！因此约定“can not commit entries from previous term”</p>
-<p>###cluster membership changes<br>如果集群的配置发生了变化，例如，新加入几台server，挂掉几台server。这是会影响选举的。</p>
+<h3 id="cluster-membership-changes"><a href="#cluster-membership-changes" class="headerlink" title="cluster membership changes"></a>cluster membership changes</h3><p>如果集群的配置发生了变化，例如，新加入几台server，挂掉几台server。这是会影响选举的。</p>
 <ul>
 <li><p>例如，如果新增了服务器，却没有更新原来server的配置，会导致leader election只有老机器在参与</p>
 </li>
@@ -521,7 +518,7 @@
 <li><p>5阶段就是new成为leader</p>
 </li>
 </ul>
-<p>###log过长或日志回放时间过长怎么办？<br>　　此时就需要做log compaction</p>
+<h3 id="log过长或日志回放时间过长怎么办？"><a href="#log过长或日志回放时间过长怎么办？" class="headerlink" title="log过长或日志回放时间过长怎么办？"></a>log过长或日志回放时间过长怎么办？</h3><p>　　此时就需要做log compaction</p>
 <p>　　raft采用的方法<strong>写时复制</strong>的snapshot(写是复制在linux中可以通过fork来完成)</p>
 <ul>
 <li>写时复制主要是处于性能考虑的，如果state machine数据太多，snapshot将会耗费大量的时间，也许会导致系统可用性大大降低</li>
@@ -707,7 +704,7 @@
             
 
             
-              <div class="post-toc-content"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#raft协议是什么？"><span class="nav-number">1.</span> <span class="nav-text">raft协议是什么？</span></a></li></ol></div>
+              <div class="post-toc-content"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#raft协议是什么？"><span class="nav-number">1.</span> <span class="nav-text">raft协议是什么？</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#raft协议原理"><span class="nav-number">2.</span> <span class="nav-text">raft协议原理　</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#如何保证Election-Safty"><span class="nav-number">2.1.</span> <span class="nav-text">如何保证Election Safty</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#如何保证Log-Matching"><span class="nav-number">2.2.</span> <span class="nav-text">如何保证Log Matching</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#如何保证Leader-Completeness"><span class="nav-number">2.3.</span> <span class="nav-text">如何保证Leader Completeness</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#raft协议中有一个约定，不能提交之前任期内log-entry作为commit点。这是为什么？"><span class="nav-number">2.4.</span> <span class="nav-text">raft协议中有一个约定，不能提交之前任期内log entry作为commit点。这是为什么？</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#cluster-membership-changes"><span class="nav-number">2.5.</span> <span class="nav-text">cluster membership changes</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#log过长或日志回放时间过长怎么办？"><span class="nav-number">2.6.</span> <span class="nav-text">log过长或日志回放时间过长怎么办？</span></a></li></ol></li></ol></div>
             
 
           </div>
