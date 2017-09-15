@@ -108,7 +108,7 @@
 <meta property="og:image" content="http://pacifica.nos-eastchina1.126.net/PacificA%E6%80%BB%E4%BD%93%E6%A1%86%E6%9E%B6.png">
 <meta property="og:image" content="http://pacifica.nos-eastchina1.126.net/pacificA%20Prepare%20list.png">
 <meta property="og:image" content="http://pacifica.nos-eastchina1.126.net/pacificA%E5%AE%9E%E8%B7%B5%E4%B8%AD%E7%9A%84%E7%B3%BB%E7%BB%9F.png">
-<meta property="og:updated_time" content="2017-09-15T08:48:51.846Z">
+<meta property="og:updated_time" content="2017-09-15T08:52:20.573Z">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="PacificA协议小结">
 <meta name="twitter:description" content="简介大规模分布式存储系统往往采用廉价的商用机器或硬件，失效出错是常态，因此容错是这类系统实现可用性和可靠性的关键。PacificA是微软大规模分布式存储系统开发的一个通用复制框架，提供强一致性，可以适配不同的复制策略。PacificA的设计特点有：  一个通用和抽象（general and abstract）的复制框架，正确性易验证，不同实例可以使用不同策略 配置管理和数据复制分离。Paxo负责">
@@ -399,12 +399,13 @@
 
       
         <a id="more"></a>
-<h2 id="简介"><a href="#简介" class="headerlink" title="简介"></a>简介</h2><p>大规模分布式存储系统往往采用廉价的商用机器或硬件，失效出错是常态，因此容错是这类系统实现可用性和可靠性的关键。PacificA是微软大规模<br>分布式存储系统开发的一个通用复制框架，提供强一致性，可以适配不同的复制策略。<!-- more -->PacificA的设计特点有：</p>
+<h2 id="简介"><a href="#简介" class="headerlink" title="简介"></a>简介</h2><p>大规模分布式存储系统往往采用廉价的商用机器或硬件，失效出错是常态，因此容错是这类系统实现可用性和可靠性的关键。PacificA是微软大规模<br>分布式存储系统开发的一个通用复制框架，提供强一致性，可以适配不同的复制策略。PacificA的设计特点有：</p>
 <ol>
 <li>一个通用和抽象（general and abstract）的复制框架，正确性易验证，不同实例可以使用不同策略</li>
 <li>配置管理和数据复制分离。Paxo负责配置管理，主从策略负责数据复制</li>
 <li>错误检测和配置更新是在数据复制的交互过程中完成的，去中心化</li>
 </ol>
+<!-- more -->
 <h2 id="系统框架"><a href="#系统框架" class="headerlink" title="系统框架"></a>系统框架</h2><p>这里面数据存储的最小单位是数据段（数据的集合，是实际存储在磁盘上的文件）。</p>
 <blockquote>
 <p><strong><em>复制组（replica goup）</em></strong>：分布在不同存储节点上的相同数据段（下图中的Data Node1中的Data1和Data Node3中的Data1构成一个复制组.</p>
